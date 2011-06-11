@@ -39,11 +39,13 @@ class Imgur(object):
             "signin": "/2/signin",
             "account": "/2/account",
             "account_images": "/2/account/images",
-            "account_images_hash": "/2/account/images/%s",
+            "account_image": "/2/account/images/%s",
             "account_images_count": "/2/account/images_count",
             "albums": "/2/account/albums",
             "album": "/2/account/albums/%s",
             "albums_count": "/2/account/albums_count",
+            "albums_order": "/2/account/albums_order",
+            "album_order": "/2/account/albums_order/%s",
             # Other
             "stats": "/2/stats",
             "credits": "/2/credits",
@@ -73,7 +75,7 @@ class Imgur(object):
         return new_f
 
     def connection_required(fun):
-        """ A decorator that checks if the user is authentified """
+        """ A decorator that checks if the user is authenticated """
         def new_f(self, *args, **kwargs):
             if not self.connected:
                 raise ImgurError("You must be connected to perform this"
@@ -83,7 +85,7 @@ class Imgur(object):
 
     def connect(self, username=None, password=None):
         """
-        A cookie is created for the authentification
+        A cookie is created for the authentication
         """
         response = self.request("POST", "signin",
                 username=username, password=password)
@@ -117,19 +119,19 @@ class Imgur(object):
     @_handle_response
     @connection_required
     def _imgedit(self, hash, title="", caption=""):
-        url = self.urls["account_images_hash"] % hash
+        url = self.urls["account_image"] % hash
         return self.request("POST", url=url, title=title, caption=caption)
 
     @_handle_response
     def _imginfos(self, hash):
         c = self.connected
-        url = self.urls["account_images_hash" if c else "image"] % hash
+        url = self.urls["account_image" if c else "image"] % hash
         return self.request("GET", url=url)
 
     @_handle_response
     def _imgdelete(self, hash):
         c = self.connected
-        url = self.urls["account_images_hash" if c else "delete"] % hash
+        url = self.urls["account_image" if c else "delete"] % hash
         return self.request("DELETE", url=url)
 
     @_handle_response
@@ -181,6 +183,17 @@ class Imgur(object):
         return self.request("GET", "albums_count")
 
     @_handle_response
+    @connection_required
+    def _albmord(self, album_id, hashes):
+        url = self.urls["album_order"] % album_id
+        return self.request("POST", url=url, hashes=hashes)
+
+    @_handle_response
+    @connection_required
+    def _albmords(self, album_ids):
+        return self.request("POST", "albums_order", album_ids=album_ids)
+
+    @_handle_response
     def _limits(self):
         return self.request("GET", "credits")
 
@@ -206,6 +219,7 @@ class Imgur(object):
 
         opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(self.cj))
         urllib2.install_opener(opener)
+        debug(url, params)
         req = urllib2.Request(url, data, headers)
         if not method in ("POST", "GET"):
             req.get_method = lambda: method
@@ -214,10 +228,24 @@ class Imgur(object):
     def _get_json(self, fun_name, *args, **kwargs):
         return self._json(getattr(self, fun_name)(*args, **kwargs).read())
 
-    def upload_image(self, image="", name="", title="", caption=""):
+    def _infos(self, img):
+        """ Print the infos of an image """
+        return dict_print(OrderedDict(img["image"].items() +
+                img["links"].items()))
+
+    def _liststr(self, datas):
+        """ Converts a list into "(foo,bar,baz)" """
+        if isinstance(datas, (list, tuple)):
+            datas = "(%s)" % (",".join(str(e) for e in datas))
+        elif not datas.startswith("("):
+            datas = "(%s)" % datas
+        return datas
+
+    def upload_image(self, image="", name="", title="", caption="", hashes=False):
         """
         Upload an image
         'image' can be a path or an url
+        if hashes is True, return only the hashes
         """
         url, file = "", ""
         if not exists(image):
@@ -225,20 +253,19 @@ class Imgur(object):
         else:
             file = image
         datas = self._get_json("_upload", file, url, name, title, caption)
-        return dict_print(datas["images" if self.connected else
-            "upload"]["links"])
+        infos = datas["images" if self.connected else "upload"]
+        if hashes:
+            return "Hash: %s\nDelete: %s" % (infos["image"]["hash"],
+                    infos["image"]["deletehash"])
+        else:
+            return self._infos(infos)
 
     def account(self):
         """ Get account infos """
         datas = self._get_json("_account")
         return dict_print(datas["account"])
 
-    def _infos(self, img):
-        """ Print the infos of an image """
-        return dict_print(OrderedDict(img["image"].items() +
-                img["links"].items()))
-
-    def list_image(self):
+    def list_images(self):
         """ List all images in account """
         datas = self._get_json("_list")
         imgs = (self._infos(img) for img in datas["images"])
@@ -259,7 +286,7 @@ class Imgur(object):
         datas = self._get_json("_imgedit", hash, new_title, new_caption)
         return self._infos(datas["images"])
 
-    def count_image(self):
+    def count_images(self):
         """ Count all images in the account """
         return self._get_json("_imgcount")["images_count"]["count"]
 
@@ -304,10 +331,7 @@ class Imgur(object):
             or a string formatted like (hash1,hash2,...)
         """
         for k in ("images", "add_images", "del_images"):
-            if isinstance(locals()[k], (list, tuple)):
-                locals()[k] = "(%s)" % (",".join(str(e) for e in locals()[k]))
-            if not locals()[k].statswith("("):
-                locals()[k] = "(%s)" % locals()[k]
+            locals()[k] = self._liststr(locals()[k])
         datas = self._get_json("_albmedit", album_id, title, description,
                 cover, privacy, layout, images, add_images, del_images)
         imgs = (self._infos(img) for img in datas["albums"])
@@ -317,6 +341,17 @@ class Imgur(object):
         """ Return the number of albums. """
         datas = self._get_json("_albmcount")
         return datas["albums_count"]["count"]
+
+    def order_album(self, album_id, hashes):
+        hashes = self._liststr(hashes)
+        datas = self._get_json("_albmord", album_id, hashes)
+        return "\n *** \n".join(dict_print(alb) for alb in datas["albums_order"])
+
+    def order_albums(self, album_ids):
+        album_ids = self._liststr(album_ids)
+        datas = self._get_json("_albmords", album_ids)
+        imgs = (self._infos(img) for img in datas["albums_order"])
+        return "\n *** \n".join(imgs)
 
     def stats(self, view="month"):
         """
@@ -360,7 +395,7 @@ def main():
     parser.add_argument("--ask-pass", action="store_true",
             help="Prompt for a password, so that it will never be displayed.")
     parser.add_argument("--anon", action="store_true", default=False,
-            help="Do not authentificate.")
+            help="Do not authenticate.")
     sparsers = parser.add_subparsers(metavar="ACTION", dest='sp_name', 
             help="Use '%(prog)s action -h' for more help")
     
@@ -369,6 +404,8 @@ def main():
     up_parser.add_argument("-t", "--title")
     up_parser.add_argument("-n", "--name")
     up_parser.add_argument("-c", "--caption")
+    up_parser.add_argument("-s", "--hashes", action="store_true",
+            help="Only print the hashes instead of all the informations")
 
     imgd_parser = sparsers.add_parser("delete", help="Delete an image")
     imgd_parser.add_argument("hash")
@@ -394,7 +431,7 @@ def main():
         "vertical", "grid"])
 
     albe_parser = sparsers.add_parser("edit-album", help="Edit an album")
-    albe_parser.add_argument("id")
+    albe_parser.add_argument("album_id")
     albe_parser.add_argument("-t", "--title")
     albe_parser.add_argument("-d", "--description")
     albe_parser.add_argument("-p", "--privacy", choices=["public", "hidden",
@@ -417,13 +454,20 @@ def main():
 
     albs_parser = sparsers.add_parser("list-album",
             help="List all images in an album")
-    albs_parser.add_argument("id")
+    albs_parser.add_argument("album_id")
 
     albco_parser = sparsers.add_parser("count-albums",
             help="Get the number of albums")
 
     albd_parser = sparsers.add_parser("delete-album", help="Delete an album")
-    albd_parser.add_argument("id")
+    albd_parser.add_argument("album_id")
+
+    albos_parser = sparsers.add_parser("order-albums", help="Order all albums in the account")
+    albos_parser.add_argument("album_ids", metavar="id1,id2,...,idn", help="The new list of album IDs")
+
+    albo_parser = sparsers.add_parser("order-album", help="Order all images in an album")
+    albo_parser.add_argument("album_id")
+    albo_parser.add_argument("hashes", metavar="hash1,hash2,...,hashn", help="The new list of hashes")
 
     stats_parser = sparsers.add_parser("stats", help="Imgur statistics")
     stats_parser.add_argument("-v", "--view",
@@ -448,15 +492,17 @@ def main():
     
     # Preparation
     opts = vars(args)
+    spname = args.sp_name
     del opts["user"], opts["password"], opts["anon"], opts["ask_pass"]
-    if args.sp_name in ("upload", "infos", "delete", "edit", "list", "count"):
-        fun = getattr(Imgur, args.sp_name+"_image")
-    elif args.sp_name.rstrip("s").endswith("album"):
-        fun_name = args.sp_name.replace("-", "_")
-        fun = getattr(Imgur, fun_name)
+    if spname in ("upload", "infos", "delete", "edit", "list", "count"):
+        fun_name = spname + "_image" if hasattr(Imgur,
+                spname + "_image") else spname + "_images"
+    elif spname.rstrip("s").endswith("album"):
+        fun_name = spname.replace("-", "_")
     else:
-        fun = getattr(Imgur, args.sp_name)
+        fun_name = spname
     del opts["sp_name"]
+    fun = getattr(Imgur, fun_name)
     
     # And action.
     print fun(i, **opts)
