@@ -4,6 +4,7 @@
 import urllib2
 import json
 from base64 import b64encode
+from getpass import getpass
 from urllib import urlencode
 from cookielib import CookieJar
 from os.path import expanduser, exists
@@ -42,6 +43,7 @@ class Imgur(object):
             "account_images_count": "/2/account/images_count",
             "albums": "/2/account/albums",
             "album": "/2/account/albums/%s",
+            "albums_count": "/2/account/albums_count",
             # Other
             "stats": "/2/stats",
             "credits": "/2/credits",
@@ -174,6 +176,11 @@ class Imgur(object):
         return self.request("POST", **datas)
 
     @_handle_response
+    @connection_required
+    def _albmcount(self):
+        return self.request("GET", "albums_count")
+
+    @_handle_response
     def _limits(self):
         return self.request("GET", "credits")
 
@@ -299,10 +306,17 @@ class Imgur(object):
         for k in ("images", "add_images", "del_images"):
             if isinstance(locals()[k], (list, tuple)):
                 locals()[k] = "(%s)" % (",".join(str(e) for e in locals()[k]))
+            if not locals()[k].statswith("("):
+                locals()[k] = "(%s)" % locals()[k]
         datas = self._get_json("_albmedit", album_id, title, description,
                 cover, privacy, layout, images, add_images, del_images)
         imgs = (self._infos(img) for img in datas["albums"])
         return "\n *** \n".join(imgs)
+
+    def count_albums(self):
+        """ Return the number of albums. """
+        datas = self._get_json("_albmcount")
+        return datas["albums_count"]["count"]
 
     def stats(self, view="month"):
         """
@@ -343,6 +357,8 @@ def main():
     parser = ArgumentParser(description="A command-line utility for imgur.com")
     parser.add_argument("--user")
     parser.add_argument("--password")
+    parser.add_argument("--ask-pass", action="store_true",
+            help="Prompt for a password, so that it will never be displayed.")
     parser.add_argument("--anon", action="store_true", default=False,
             help="Do not authentificate.")
     sparsers = parser.add_subparsers(metavar="ACTION", dest='sp_name', 
@@ -377,9 +393,34 @@ def main():
     albc_parser.add_argument("-l", "--layout", choices=["blog", "horizontal",
         "vertical", "grid"])
 
-    albl_parser = sparsers.add_parser("list-album",
-            help="List all albums or all images in an album")
-    albl_parser.add_argument("id", nargs="?")
+    albe_parser = sparsers.add_parser("edit-album", help="Edit an album")
+    albe_parser.add_argument("id")
+    albe_parser.add_argument("-t", "--title")
+    albe_parser.add_argument("-d", "--description")
+    albe_parser.add_argument("-p", "--privacy", choices=["public", "hidden",
+        "secret"])
+    albe_parser.add_argument("-l", "--layout", choices=["blog", "horizontal",
+        "vertical", "grid"])
+    albe_parser.add_argument("-c", "--cover", help="The hash of an image to use "
+            "as cover for the album", metavar="hash")
+    albe_parser.add_argument("-i", "--images", metavar="hash1,hash2,..,hashN",
+            help="Replace all images in an album.")
+    albe_parser.add_argument("-a", "--add", metavar="hash1,hash2,..,hashN",
+            help="Add images to the album.")
+    albe_parser.add_argument("-r", "--delete", metavar="hash1,hash2,..,hashN",
+            help="Delete images from the album.")
+
+    albl_parser = sparsers.add_parser("list-albums",
+            help="List all albums.")
+    albl_parser.add_argument("-c", "--count", help="The number of albums to return")
+    albl_parser.add_argument("-p", "--page", help="The pages of albums to return")
+
+    albs_parser = sparsers.add_parser("list-album",
+            help="List all images in an album")
+    albs_parser.add_argument("id")
+
+    albco_parser = sparsers.add_parser("count-albums",
+            help="Get the number of albums")
 
     albd_parser = sparsers.add_parser("delete-album", help="Delete an album")
     albd_parser.add_argument("id")
@@ -390,27 +431,28 @@ def main():
 
     # Authentification
     args = parser.parse_args()
-    u, p = args.user, args.password
-    if u or p:
-        if u and not p:
-            i.connect(u, PASSWORD)
-        elif p and not u:
-            i.connect(USERNAME, p)
+    u, p, ap = args.user, args.password, args.ask_pass
+    if u and not p:
+        if ap:
+            i.connect(u, getpass())
         else:
-            i.connect(u, p)
+            i.connect(u, PASSWORD)
+    elif p and not u:
+        i.connect(USERNAME, p)
+    elif u and p:
+        i.connect(u, p)
+    elif USERNAME and (not PASSWORD or ap) and not args.anon:
+        i.connect(USERNAME, getpass())
     elif USERNAME and PASSWORD and not args.anon:
         i.connect(USERNAME, PASSWORD)
     
     # Preparation
     opts = vars(args)
-    del opts["user"], opts["password"], opts["anon"]
+    del opts["user"], opts["password"], opts["anon"], opts["ask_pass"]
     if args.sp_name in ("upload", "infos", "delete", "edit", "list", "count"):
         fun = getattr(Imgur, args.sp_name+"_image")
-    elif args.sp_name.endswith("album"):
+    elif args.sp_name.rstrip("s").endswith("album"):
         fun_name = args.sp_name.replace("-", "_")
-        if args.sp_name.startswith("list") and not args.id:
-            del opts["id"]
-            fun_name += "s"
         fun = getattr(Imgur, fun_name)
     else:
         fun = getattr(Imgur, args.sp_name)
